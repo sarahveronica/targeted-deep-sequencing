@@ -1,0 +1,651 @@
+﻿################
+# Quality control
+#############################################################################
+
+cd $PATH/Rawdata/ASSYST
+
+
+for file in *.fastq
+do
+echo $file
+$PATH/FastQC/fastqc $file -o $PATH/FASTQC/ASSYST
+done
+
+
+#########################
+# Alignment, Sorting, Indexing, Remove Duplicates
+############################################################################
+
+# 
+
+create index for new genome (once)
+
+$PATH/soap2.21release/2bwt-builder $PATH/Brassica_napus_v4.1/Brassica_napus_v4.1.chromosomes.fa
+
+# Alignment
+
+# define paths
+
+
+index=$PATH/Brassica_napus_v4.1/Brassica_napus_v4.1.chromosomes.fa.index
+datadir=$PATH/Rawdata/ASSYST
+outputdir=$PATH/Alignment/ASSYST
+
+cd $datadir
+
+# Loop
+
+for file in *.fastq
+do
+echo $file
+
+# Alignment
+
+$PATH/soap2.21release/soap \
+-a $file \
+-D $index \
+-o $outputdir/$file'_output.soap' \
+2>> $outputdir/'SOAP_report_'$file'.txt'
+
+echo $file'_output.soap'
+
+cd $outputdir
+
+# change to SAM format
+
+$PATH/Programme/soap2sam.pl \
+$file'_output.soap' \
+>$file'.sam'
+
+echo $file'.sam'
+
+# Change to BAM format
+
+$PATH/samtools-0.1.19/samtools view \
+-bS \
+-T  $PATH/Brassica_napus_v4.1/Brassica_napus_v4.1.chromosomes.fa \
+$file'.sam' \
+> $file'.bam' \
+2>>'SOAP_report_'$file'.txt'
+
+echo $file'.bam'
+
+# Remove duplicates
+
+$PATH/samtools-0.1.19/samtools rmdup -s $file'.bam' $file'_collapsed.bam'
+
+echo $file'_collapsed.bam'
+
+rm $file'.sam'
+
+# Sort
+
+$PATH/samtools-0.1.19/samtools sort -m 1000000000 $file'_collapsed.bam'  $file'_sorted'
+
+echo $file'_sorted'
+
+# Index
+
+$PATH/samtools-0.1.19/samtools index $file'_sorted.bam'
+
+# remove unneccessary files
+
+rm $file'.bam'
+rm $file'_collapsed.bam'
+
+cd $datadir
+
+done
+
+#####################
+# for unique reads: Alignment with -r=0
+########################################
+
+cd $datadir
+
+# Loop
+
+for file in *.fastq
+do
+echo $file
+
+# Alignment
+
+$PATH/soap2.21release/soap \
+-a $file \
+-D $index \
+-o $outputdir/$file'_r0_output.soap' \
+-r 0 \
+2>> $outputdir/'SOAP_report_r0_'$file'.txt'
+
+echo $file'_output.soap_r0'
+
+cd $outputdir
+
+# change to SAM format
+
+$PATH/Programme/soap2sam.pl \
+$file'_r0_output.soap' \
+>$file'_r0.sam'
+
+echo $file'_r0.sam'
+
+# change to BAM format
+
+$PATH/samtools-0.1.19/samtools view \
+-bS \
+-T  $PATH/Brassica_napus_v4.1/Brassica_napus_v4.1.chromosomes.fa \
+$file'_r0.sam' \
+> $file'_r0.bam' \
+2>>'SOAP_report_r0_'$file'.txt'
+
+echo $file'_r0.bam'
+
+# Remove duplicates
+
+$PATH/samtools-0.1.19/samtools rmdup -s $file'_r0.bam' $file'_r0_collapsed.bam'
+
+echo $file'_r0_collapsed.bam'
+
+rm $file'_r0.sam'
+
+# Sort
+
+$PATH/samtools-0.1.19/samtools sort -m 1000000000 $file'_r0_collapsed.bam'  $file'_r0_sorted'
+
+echo $file'_r0_sorted'
+
+# Index
+
+$PATH/samtools-0.1.19/samtools index $file'_r0_sorted.bam'
+
+# remove unneccessary files
+
+rm $file'_r0.bam'
+rm $file'_r0_collapsed.bam'
+
+cd $datadir
+done
+
+
+############################
+# SNP calling
+#####################################################
+###########################
+
+## initial SNP calling 
+
+cd $PATH/Alignment/ASSYST
+
+for file in *bam
+do
+
+echo SNP calling $file started
+
+$PATH/samtools-0.1.19/samtools mpileup \
+-d 5000 \
+-m 3 -F 0.0002 \
+-u -A -f \
+$PATH/Brassica_napus_v4.1/Brassica_napus_v4.1.chromosomes.fa  \
+$file \
+| $PATH/samtools-0.1.19/bcftools/bcftools view -bvcg - \
+> $PATH/SNP_calling/ASSYST/'SNPs_'$file'.bcf'
+
+echo SNPs $file called
+
+cd $PATH/SNP_calling/ASSYST
+
+$PATH/samtools-0.1.19/bcftools/bcftools view 'SNPs_'$file'.bcf' | $PATH/samtools-0.1.19/bcftools/vcfutils.pl varFilter >'SNPs_'$file'.vcf'
+
+echo vcf $file created
+
+cd $PATH/Alignment/ASSYST
+
+date
+done
+
+## create a list of SNPs with quality > 50, depth >= 10
+
+# format for R
+
+cd $PATH/SNP_calling/ASSYST
+
+for file in *.vcf
+do
+sed 's/;/\t/g' $file > $file'_new'
+sed 's/=/\t/g' $file'_new' > $file'_formated'
+rm $file'_new'
+done
+
+# filter in R
+
+R
+
+files<-list.files(path="$PATH/SNP_calling/ASSYST", pattern="*.formated", full.names=T, recursive=FALSE)
+lapply(files, function(x) {
+file<-read.csv(file=x, skip=36, header=F, sep="\t")
+fileq<-subset(file, file$V6>50)
+filedp<-subset(fileq, fileq$V9>9)
+list<-data.frame(filedp$V1, filedp$V2)
+write.table(list, file=paste(x, "listed", sep="_"), row.names=FALSE, col.names=FALSE, sep="\t")
+})
+
+q()
+n
+
+# make a list of filenames
+
+mkdir listed
+
+for file in *_listed
+do
+mv $file listed/$file
+done
+
+cd listed
+ls > filelist
+sed 's/listed/listed \\/g' filelist> filelist_umbruch.txt
+
+# use this list for a .sh file structured like the following
+
+cat file1 file2 > file.out
+
+# paste this to cat.sh (manually)
+
+chmod u+x cat.sh
+./cat.sh
+
+# result: snp_list_redundant.txt
+# remove redundant SNPs
+
+R
+
+list<-read.table(file="snp_list_redundant.txt", header=F)
+listsorted<-list[order(list$V1,list$V2),]
+uniquelist<-unique(listsorted)
+write.table(uniquelist, file="snp_list_unique", row.names=FALSE, col.names=FALSE, sep="\t")
+
+q()
+n
+
+sed 's/"//g' snp_list_unique > snp_list_unique.txt
+
+cp snp_list_unique.txt $PATH/Alignment/ASSYST/snp_list_unique.txt
+
+## repeat SNP calling for redundant SNP list
+
+cd $PATH/Alignment/ASSYST
+
+for file in *bam
+do
+
+$PATH/samtools-0.1.19/samtools mpileup \
+-d 5000 \
+-l snp_list_unique.txt \
+-u -A -f \
+$PATH/Brassica_napus_v4.1/Brassica_napus_v4.1.chromosomes.fa  \
+$file \
+| $PATH/samtools-0.1.19/bcftools/bcftools view -bvcg - \
+> $PATH/SNP_calling/ASSYST/'Listed_SNPs_'$file'.bcf'
+
+cd $PATH/SNP_calling/ASSYST
+
+$PATH/samtools-0.1.19/bcftools/bcftools view 'Listed_SNPs_'$file'.bcf' | $PATH/samtools-0.1.19/bcftools/vcfutils.pl varFilter >'Listed_SNPs_'$file'.vcf'
+
+cd $PATH/Alignment/ASSYST
+
+done
+
+
+# merge files using a .sh structured as
+
+$PERL5LIB/vcf-merge Sorted_Filtered_Listed_SNPs_ASSYST001.fastq_sorted.bam.vcf.gz Sorted_Filtered_Listed_SNPs_ASSYST002.fastq_sorted.bam.vcf.gz Sorted_Filtered_Listed_SNPs_ASSYST003.fastq_sorted.bam.vcf.gz > test.out.vcf
+
+chmod u+x vcfmerge.sh
+./vcfmerge.sh
+
+
+################################################################################################
+# Indel calling
+################################################################################################
+
+########### Gapped alignment und remove duplicates #######################################
+
+# define paths
+
+datadir=$PATH/Rawdata/ASSYST
+outputdir=$PATH/Alignment/ASSYST/Bowtie2
+index=$PATH/bowtie2-2.2.3/index/Brassica_napus_v4.1
+
+# Loop for Aligment with bowtie
+
+cd $datadir
+
+for data in ASSYST*.fastq
+do
+
+echo $data
+
+/home/s400/transfer/Flowering/sw/bowtie2-2.1.0/bowtie2 \
+--very-sensitive \
+-r $data \
+-q \
+-p 40 \
+-L 28 \
+-x $index \
+-S $outputdir/$data'.sam' \
+2>>$outputdir/'Bowtie2_report_'$data
+
+cd $outputdir
+
+/home/s400/transfer/Flowering/sw/samtools-0.1.19/samtools view -bS $data'.sam'  > $data'.bam' 2>>'Bowtie_report_'$file
+
+echo $data'.bam'
+
+/home/s400/transfer/Flowering/sw/samtools-0.1.19/samtools rmdup -s $data'.bam' $data'_collapsed.bam'
+
+echo $data'collapsed.bam'
+
+rm $data'.sam'
+
+/home/s400/transfer/Flowering/sw/samtools-0.1.19/samtools sort -m 1000000000 $data'_collapsed.bam'  $data'_sorted'
+
+echo $data'_sorted'
+
+/home/s400/transfer/Flowering/sw/samtools-0.1.19/samtools index $data'_sorted.bam'
+
+rm $data'.bam'
+
+rm $data'_collapsed.bam'
+
+cd $datadir
+
+done
+
+############### realign indels ########################################
+
+# initial indel calling 
+
+cd $PATH/Alignment/ASSYST/Bowtie2
+
+for file in *bam
+do
+
+$PATH/samtools-0.1.19/samtools mpileup \
+-d 5000 \
+-m 3 -F 0.0002 \
+-u -A -f \
+$PATH/Brassica_napus_v4.1/Brassica_napus_v4.1.chromosomes.fa  \
+$file \
+| $PATH/samtools-0.1.19/bcftools/bcftools view -bvcg - \
+> $PATH/SNP_calling/ASSYST/indels/'SNPs_indels_Bowtie2'$file'.bcf'
+
+echo SNPs für $file gecallt
+
+cd $PATH/SNP_calling/ASSYST/indels
+
+$PATH/samtools-0.1.19/bcftools/bcftools view 'SNPs_indels_Bowtie2'$file'.bcf' | $PATH/samtools-0.1.19/bcftools/vcfutils.pl varFilter >'SNPs_indels_Bowtie2'$file'.vcf'
+
+echo vcf für $file erzeugt
+
+cd $PATH/Alignment/ASSYST/Bowtie2
+
+date
+
+done
+
+# filter for indels 
+
+for file in *vcf
+do
+
+vcftools --vcf $file --keep-only-indels --recode --recode-INFO-all --out 'INDELs_only_'$file
+
+date
+
+done
+
+# necessary for sorting, indexing...
+
+export PERL5LIB=$PATH/vcftools_0.1.12b/perl
+
+export  PATH=$PATH:$PATH/Programme/tabix-0.2.6/
+
+# Loop for sorting, indexing, compressing
+
+for file in INDELs_only_*.vcf
+do
+
+echo $file
+
+date
+
+$PERL5LIB/vcf-sort $file > 'Sorted_'$file
+
+$PATH/Programme/tabix-0.2.6/bgzip 'Sorted_'$file
+$PATH/Programme/tabix-0.2.6/tabix -p vcf 'Sorted_'$file'.gz' 
+
+done
+
+# make a .sh-file like
+
+$PERL5LIB/vcf-merge Sorted_INDELs_only_SNPs_indels_Bowtie2ASSYST001.fastq_sorted.bam.vcf.recode.vcf.gz Sorted_INDELs_only_SNPs_indels_Bowtie2ASSYST002.fastq_sorted.bam.vcf.recode.vcf.gz  > test.out.vcf
+
+# create filelist
+
+for file in *.gz
+do
+
+echo $file >>mergenames.txt
+
+done
+
+sed 's/gz/gz \\/g'  mergenames.txt > mergenames_formated.txt
+
+# merge
+
+chmod u+x merge.sh
+./merge.sh
+
+# Introduce headers
+
+for file in *.bam
+do
+
+java -jar $PATH/Programme/picard-tools-1.102/AddOrReplaceReadGroups.jar \
+INPUT=$file \
+OUTPUT='RG_'$file \
+RGID=group1 \
+RGLB=lib1 \
+RGPL=illumina \
+RGPU=unit1 \
+RGSM=sample1
+
+echo $file
+done
+
+cd $PATH/Alignment/ASSYST/Bowtie2
+
+# sort
+
+java -jar $PATH/Programme/picard-tools-1.141/picard.jar SortVcf \
+INPUT=INDELs_all.vcf \
+OUTPUT=Sorted_INDELs_all.vcf \
+SEQUENCE_DICTIONARY=$PATH/Brassica_napus_v4.1/Brassica_napus_v4.1.chromosomes.dict
+
+# index
+
+
+for file in RG_*bam
+do
+echo $file
+
+$PATH/samtools-0.1.19/samtools index $file
+
+echo $file indexiert
+
+java -Xmx1g -jar $PATH/GenomeAnalysisTK-3.1-1/GenomeAnalysisTK.jar \
+  -T RealignerTargetCreator \
+  -I $file \
+  -R $PATH/Brassica_napus_v4.1/Brassica_napus_v4.1.chromosomes.fa \
+  -o $PATH/SNP_calling/ASSYST/indels/'output.intervals_'$file'.bed' \
+  -known $PATH/SNP_calling/ASSYST/indels/Sorted_INDELs_all.vcf 
+
+date
+done
+
+# Realignment
+
+for file in RG_*bam
+do
+
+java -jar $PATH/GenomeAnalysisTK-3.1-1/GenomeAnalysisTK.jar -T IndelRealigner -R $PATH/Brassica_napus_v4.1/Brassica_napus_v4.1.chromosomes.fa -I $file -targetIntervals $PATH/SNP_calling/ASSYST/indels/'output.intervals_'$file'.bed' -known $PATH/SNP_calling/ASSYST/indels/Sorted_INDELs_all.vcf -o 'Realigned_'$file
+
+date
+done
+
+# final indel calling
+
+for file in Realigned*bam
+do
+
+$PATH/samtools-0.1.19/samtools mpileup \
+-d 5000 \
+-m 3 -F 0.0002 \
+-u -A -f \
+$PATH/Brassica_napus_v4.1/Brassica_napus_v4.1.chromosomes.fa  \
+$file \
+| $PATH/samtools-0.1.19/bcftools/bcftools view -bvcg - \
+> $PATH/ASSYST/indels/'SNPs_indels_'$file'.bcf'
+
+cd $PATH/SNP_calling/ASSYST/indels
+
+$PATH/samtools-0.1.19/bcftools/bcftools view 'SNPs_indels_'$file'.bcf' | $PATH/samtools-0.1.19/bcftools/vcfutils.pl varFilter >'SNPs_indels_'$file'.vcf'
+
+echo vcf für $file erzeugt
+
+cd $PATH/Alignment/ASSYST/Bowtie2
+
+date
+
+done
+
+# filter indels for quality >30 and read depth >=10 
+
+export PERL5LIB=$PATH/vcftools_0.1.12b/perl
+
+cd $PATH/SNP_calling/ASSYST/indels
+
+for file in SNPs_indels_Realigned_RG*vcf
+do
+
+vcftools --vcf $file --keep-only-indels --recode --recode-INFO-all --out 'INDELs_only_'$file
+vcftools --vcf 'INDELs_only_'$file'.recode.vcf' --minQ 30 --recode --recode-INFO-all --out 'Filtered_Q_'$file
+$PERL5LIB/vcf-annotate 'Filtered_Q_'$file'.recode.vcf' -f d=10 > 'Filtered_DP_'$file
+vcftools --vcf 'Filtered_DP_'$file --remove-filtered-all --recode --recode-INFO-all --out 'Filtered_'$file
+
+rm 'INDELs_only_'$file'.recode.vcf'
+rm 'Filtered_Q_'$file'.recode.vcf'
+rm 'Filtered_DP_'$file
+
+date
+
+done
+
+# sorting, indexing, compressing
+
+for file in Filtered*_*Realigned*.vcf
+do
+
+echo $file
+
+date
+
+$PERL5LIB/vcf-sort $file > 'Sorted_'$file
+
+$PATH/Programme/tabix-0.2.6/bgzip 'Sorted_'$file
+$PATH/Programme/tabix-0.2.6/tabix -p vcf 'Sorted_'$file'.gz' 
+
+done
+
+# make a .sh like
+
+$PERL5LIB/vcf-merge Sorted_INDELs_only_SNPs_indels_Bowtie2ASSYST001.fastq_sorted.bam.vcf.recode.vcf.gz Sorted_INDELs_only_SNPs_indels_Bowtie2ASSYST002.fastq_sorted.bam.vcf.recode.vcf.gz  > test.out.vcf
+
+# create filelist
+
+for file in Sorted_Filtered*_*Realigned*.gz
+do
+echo $file
+echo $file >> mergenames_realigned.txt
+
+done
+
+sed 's/gz/gz \\/g'  mergenames_realigned.txt > mergenames_realigned_formated.txt
+
+# merge
+
+chmod u+x merge_final.sh
+./merge_final.sh
+
+################################################################################
+# Coverage calculation and normalisation
+################################################################################
+
+cd $PATH/Alignment/ASSYST
+
+# create a .sh like
+
+$PATH//bedtools-2.17.0/bin/multiBamCov \
+-bams ASSYST001.fastq_sorted.bam \
+ASSYST002.fastq_sorted.bam \
+-bed $PATH/Rawdata/all_covered_regions_curated.bed \
+> $PATH/Coverage/Coverage_fastq-files.txt
+
+# create filelist
+
+for file in *.bam
+do
+echo $file >> $PATH/Alignment/ASSYST/bamfiles_fastq.txt
+
+done
+
+sed 's/bam/bam \\/g' bamfiles_fastq.txt > bamfiles_fastq_umbruch.txt
+
+cd $PATH/Alignment/ASSYST
+
+# run multicov
+chmod u+x $PATH/Coverage/ASSYST/multicov.sh
+$PATH/Coverage/ASSYST/multicov.sh
+
+cd /home/s400/home00/pz1/sh3724/data02/Coverage_TEM1_CO_CO-li
+
+# normalisation
+
+R
+
+ali<-read.table("Coverage_all_regions.txt", header=F)
+head(ali)
+attach(ali)
+geno1<-ali[,4:285]
+geno<-as.matrix(geno1)
+geno_sum<-colSums(geno)
+length<-ali$V3-ali$V2
+cov1<-ali[,4:285]
+cov<-as.matrix(cov1)
+
+norm1<-cov*850292103
+norm2<-t(t(norm1)/geno_sum)
+norm<-norm2/length
+norm_mean<-rowMeans(norm)
+
+ali2<-data.frame(ali$V1, ali$V2, ali$V3, norm, norm_mean)
+
+interesting<-subset(ali2, ali2$norm_mean>10)
+bed<-data.frame(interesting[,1:3],interesting$norm_mean)
+
+write.table(interesting, file="coverage_regions_normalized_nsr.txt", col.names=F, row.names=F, quote=F)
+write.table(bed, file="regions_normalized_nsr.bed", col.names=F, row.names=F, quote=F, sep="\t")
+
+q()
+n
